@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import os
 import re
 from io import BytesIO
 
@@ -18,8 +17,8 @@ catalog_file = st.sidebar.file_uploader("2. Katalog Raporu Excel'i (Köprü)", t
 stock_file = st.sidebar.file_uploader("3. Güncel Stok Excel'i", type=["xlsx", "xls"])
 
 if orders_file and catalog_file and stock_file:
-    # Verileri oku
-    df_orders = pd.read_excel(orders_file, engine="openpyxl")
+    # Verileri oku - Sipariş sayfası 'Sheet1' üzerinde çalışıyoruz
+    df_orders = pd.read_excel(orders_file, sheet_name="Sheet1", engine="openpyxl")
     df_catalog = pd.read_excel(catalog_file, engine="openpyxl")
     df_stock = pd.read_excel(stock_file, engine="openpyxl")
     
@@ -30,12 +29,15 @@ if orders_file and catalog_file and stock_file:
     
     st.success("✅ Tüm analiz dosyaları başarıyla yüklendi!")
     
-    # Kritik Sütun Tanımları
-    siparis_barkod_col = "Barkod"
+    # Belirttiğiniz Kritik Kolon Başlıkları
+    siparis_material_col = "Material" # Sipariş dosyasındaki malzeme kolonu
     katalog_material_col = "Material"
-    katalog_ean_col = "EAN Cod-UM"
+    katalog_ean_col = "EAN Cod-UM"     # Katalogdaki barkod kolonu
+    
+    # Alokasyon dosyasında (Bekleyen siparişler/Alokasyon birleşik excel'inde) barkod başlığı
+    alloc_barkod_col = "EAN/UPC"       
     stok_material_col = "Material"
-    stok_net_avail_col = "Net avail."
+    stok_net_avail_col = "Net avail."  # Stoktaki net adet kolonu
     
     # Alokasyon dosyasındaki (1. Gelen Bekleyen Siparişler) tahsis ve kalan adet kolonlarını dinamik bulma
     alokasyon_adet_col = None
@@ -47,7 +49,7 @@ if orders_file and catalog_file and stock_file:
     kalan_adet_col = "Kalan adet" if "Kalan adet" in df_orders.columns else ("Kalan Adet" if "Kalan Adet" in df_orders.columns else None)
     
     # Kolon Kontrolleri
-    orders_ok = siparis_barkod_col in df_orders.columns and "Sipariş Miktarı" in df_orders.columns and alokasyon_adet_col is not None and kalan_adet_col is not None
+    orders_ok = siparis_material_col in df_orders.columns and "Sipariş Miktarı" in df_orders.columns and alokasyon_adet_col is not None and kalan_adet_col is not None and alloc_barkod_col in df_orders.columns
     catalog_ok = katalog_material_col in df_catalog.columns and katalog_ean_col in df_catalog.columns
     stock_ok = stok_material_col in df_stock.columns and stok_net_avail_col in df_stock.columns
     
@@ -56,7 +58,9 @@ if orders_file and catalog_file and stock_file:
         # --- BARKOD & MALZEME TEMİZLEME MOTORLARI ---
         def gelismis_barkod_temizle(seri):
             s_str = seri.astype(str).str.strip()
+            # Baş ve sondaki noktaları at
             s_str = s_str.apply(lambda x: re.sub(r'^\.+|\.+$', '', x))
+            # Bilimsel gösterim ayarı
             def e_notation_duzelt(val):
                 if 'e' in val.lower():
                     try:
@@ -75,31 +79,38 @@ if orders_file and catalog_file and stock_file:
             s_str = s_str.str.lstrip('0')
             return s_str
 
-        # Format temizliği
-        df_orders[siparis_barkod_col] = gelismis_barkod_temizle(df_orders[siparis_barkod_col])
+        # Format temizliklerini yapalım
+        df_orders[siparis_material_col] = malzeme_kodunu_temizle(df_orders[siparis_material_col])
+        df_orders[alloc_barkod_col] = gelismis_barkod_temizle(df_orders[alloc_barkod_col])
+        
         df_catalog[katalog_material_col] = malzeme_kodunu_temizle(df_catalog[katalog_material_col])
         df_catalog[katalog_ean_col] = gelismis_barkod_temizle(df_catalog[katalog_ean_col])
+        
         df_stock[stok_material_col] = malzeme_kodunu_temizle(df_stock[stok_material_col])
         df_stock[stok_net_avail_col] = pd.to_numeric(df_stock[stok_net_avail_col], errors='coerce').fillna(0)
 
         # --- BARKOD BAZLI STOK HESAPLAMA ---
+        # 1. Adım: Stok dosyasındaki malzeme kodlarının stoklarını gruplayarak topla
         df_stock_grouped = df_stock.groupby(stok_material_col)[stok_net_avail_col].sum().reset_index()
         
-        # Köprüyü dinamik olarak yüklediğiniz Katalog Excel'inden kuruyoruz!
+        # 2. Adım: Katalogdan temiz Material -> EAN Cod-UM eşleşmesini al
         df_cat_bridge = df_catalog[[katalog_material_col, katalog_ean_col]].dropna().drop_duplicates()
-        df_merged_stock = pd.merge(df_cat_bridge, df_stock_grouped, on=katalog_material_col, how="inner")
         
-        # Barkod bazında toplam depo stoğu
+        # 3. Adım: Kataloğu Stokla birleştirerek Barkod bazlı toplam depo stoğunu elde et
+        df_merged_stock = pd.merge(df_cat_bridge, df_stock_grouped, on=katalog_material_col, how="inner")
         df_barcode_stock_sum = df_merged_stock.groupby(katalog_ean_col)[stok_net_avail_col].sum().reset_index()
-        df_barcode_stock_sum.rename(columns={katalog_ean_col: "Barkod"}, inplace=True)
+        df_barcode_stock_sum.rename(columns={katalog_ean_col: "EAN_Köprü"}, inplace=True)
 
-        # --- S SİPARİŞ VE STOK BİRLEŞTİRME ---
-        df_final = pd.merge(df_orders, df_barcode_stock_sum, on="Barkod", how="left")
+        # --- SİPARİŞ VE STOK BİRLEŞTİRME ---
+        # Siparişe ait barkod-stok durumunu EAN/UPC (alokasyon barkodu) üzerinden birleştiriyoruz!
+        df_final = pd.merge(df_orders, df_barcode_stock_sum, left_on=alloc_barkod_col, right_on="EAN_Köprü", how="left")
         df_final[stok_net_avail_col] = df_final[stok_net_avail_col].fillna(0)
         
         # --- BARKOD BAZLI TOPLAM KALAN ALOKASYON VE BOŞTAKİ STOK HESABI ---
-        df_final["Toplam Kalan Alokasyon"] = df_final.groupby("Barkod")[kalan_adet_col].transform("sum")
+        # EAN/UPC bazında tüm müşterilerin "Kalan adet" toplamını hesaplayalım
+        df_final["Toplam Kalan Alokasyon"] = df_final.groupby(alloc_barkod_col)[kalan_adet_col].transform("sum")
         
+        # Boştaki Stok Formülü: Net avail. - Toplam Kalan Alokasyon
         df_final["Boştaki Stok"] = df_final[stok_net_avail_col] - df_final["Toplam Kalan Alokasyon"]
         df_final["Boştaki Stok"] = df_final["Boştaki Stok"].apply(lambda x: max(0, x))
 
@@ -160,10 +171,23 @@ if orders_file and catalog_file and stock_file:
         st.subheader("📋 Alokasyon Revizyon Audit Raporu")
         st.caption("💡 İpucu: Listede süzülen herhangi bir hücredeki barkod veya aksiyon planını çift tıklayarak anında kopyalayabilirsiniz (Ctrl+C).")
         
-        display_cols = [
-            "Müşteri Adı", "Barkod", "Sipariş Miktarı", alokasyon_adet_col, kalan_adet_col,
-            stok_net_avail_col, "Boştaki Stok", "Denetim Durumu", "Önerilen Aksiyon Planı"
-        ]
+        # Gösterilecek kolonlar (Müşteri Adı, Malzeme, Barkod, Sipariş, Tahsis, Kalan, Stok, Boştaki Stok, Durum)
+        display_cols = []
+        possible_cols = {
+            'Müşteri Adı': 'Müşteri Adı',
+            siparis_material_col: siparis_material_col,
+            alloc_barkod_col: alloc_barkod_col,
+            'Sipariş Miktarı': 'Sipariş Miktarı',
+            alokasyon_adet_col: alokasyon_adet_col,
+            kalan_adet_col: kalan_adet_col,
+            stok_net_avail_col: stok_net_avail_col,
+            'Boştaki Stok': 'Boştaki Stok',
+            'Denetim Durumu': 'Denetim Durumu',
+            'Önerilen Aksiyon Planı': 'Önerilen Aksiyon Planı'
+        }
+        for col_key, col_val in possible_cols.items():
+            if col_val in df_filtered.columns:
+                display_cols.append(col_val)
         
         def color_audit_durumu(val):
             if "Boşta Stok" in val:
@@ -173,12 +197,12 @@ if orders_file and catalog_file and stock_file:
 
         st.dataframe(
             df_filtered[display_cols].style.format({
-                'Sipariş Miktarı': '{:,.0f}',
-                alokasyon_adet_col: '{:,.0f}',
-                kalan_adet_col: '{:,.0f}',
-                stok_net_avail_col: '{:,.0f}',
-                'Boştaki Stok': '{:,.0f}'
-            }).map(color_audit_durumu, subset=['Denetim Durumu']),
+                'Sipariş Miktarı': '{:,.0f}' if 'Sipariş Miktarı' in df_filtered.columns else '{}',
+                alokasyon_adet_col: '{:,.0f}' if alokasyon_adet_col in df_filtered.columns else '{}',
+                kalan_adet_col: '{:,.0f}' if kalan_adet_col in df_filtered.columns else '{}',
+                stok_net_avail_col: '{:,.0f}' if stok_net_avail_col in df_filtered.columns else '{}',
+                'Boştaki Stok': '{:,.0f}' if 'Boştaki Stok' in df_filtered.columns else '{}'
+            }).map(color_audit_durumu, subset=['Denetim Durumu'] if 'Denetim Durumu' in df_filtered.columns else []),
             use_container_width=True
         )
 
@@ -203,10 +227,10 @@ if orders_file and catalog_file and stock_file:
     else:
         st.warning("⚠ Yüklenen dosyaların kolon isimlerini kontrol edin:")
         if not orders_ok:
-            st.error(f"❌ Sipariş dosyasında 'Barkod', 'Sipariş Miktarı', '{alokasyon_adet_col}' ve '{kalan_adet_col}' olmalı.")
+            st.error(f"❌ Sipariş dosyasında '{siparis_material_col}', 'Sipariş Miktarı', '{alokasyon_adet_col}', '{kalan_adet_col}' ve '{alloc_barkod_col}' olmalı. (Yüklenen sayfa: Sheet1)")
         if not catalog_ok:
             st.error(f"❌ Katalog dosyasında '{katalog_material_col}' ve '{katalog_ean_col}' olmalı.")
         if not stock_ok:
-            st.error(f"❌ Stok dosyasında 'Material' ve '{stok_net_avail_col}' olmalı.")
+            st.error(f"❌ Stok dosyasında '{stok_material_col}' ve '{stok_net_avail_col}' olmalı.")
 else:
     st.info("💡 Lütfen sol menüden 'Siparişler', 'Katalog' ve 'Stok' excel dosyalarını yükleyin. Denetim analizleri arka planda anlık olarak tamamlanacaktır.")
