@@ -17,10 +17,10 @@ catalog_file = st.sidebar.file_uploader("2. Katalog Raporu Excel'i (Köprü)", t
 stock_file = st.sidebar.file_uploader("3. Güncel Stok Excel'i", type=["xlsx", "xls"])
 
 if orders_file and catalog_file and stock_file:
-    # Verileri oku - Sipariş sayfası 'Sheet1' üzerinde çalışıyoruz
+    # Verileri oku - SADECE 'Sheet1' sayfasını okuyoruz!
     df_orders = pd.read_excel(orders_file, sheet_name="Sheet1", engine="openpyxl")
-    df_catalog = pd.read_excel(catalog_file, engine="openpyxl")
-    df_stock = pd.read_excel(stock_file, engine="openpyxl")
+    df_catalog = pd.read_excel(catalog_file, sheet_name="Sheet1", engine="openpyxl")
+    df_stock = pd.read_excel(stock_file, sheet_name="Sheet1", engine="openpyxl")
     
     # Kolon başlıklarındaki boşlukları temizleme
     df_orders.columns = df_orders.columns.str.strip()
@@ -36,10 +36,9 @@ if orders_file and catalog_file and stock_file:
     stok_material_col = "Material"
     stok_net_avail_col = "Net avail."
     
-    # Barkod kolonu için EAN/UPC uyuşması
+    # Barkod kolonu için EAN/UPC uyuşması (Sipariş dosyasındakiyle aynı)
     alloc_barkod_col = "EAN/UPC" if "EAN/UPC" in df_orders.columns else ("Barkod" if "Barkod" in df_orders.columns else None)
     if alloc_barkod_col is None:
-        # Eğer ikisi de yoksa, içinde EAN veya UPC geçen ilk kolonu seç
         for col in df_orders.columns:
             if "ean" in col.lower() or "upc" in col.lower() or "barkod" in col.lower():
                 alloc_barkod_col = col
@@ -237,7 +236,7 @@ if orders_file and catalog_file and stock_file:
     else:
         st.warning("⚠ Yüklenen dosyaların kolon isimlerini kontrol edin:")
         if not orders_ok:
-            st.error(f"❌ Sipariş dosyasında '{siparis_material_col}', 'Sipariş Miktarı', '{alokasyon_adet_col}', '{kalan_adet_col}' ve '{alloc_barkod_col}' olmalı. (Yüklenen sayfa: Sheet1)")
+            st.error(f"❌ Sipariş dosyasında '{siparis_material_col}', 'Sipariş Miktarı', '{alokasyon_adet_col}', '{kalan_adet_col}' ve '{alloc_barkod_col}' olmalı. (Sadece Sheet1 sayfası okunuyor.)")
         if not catalog_ok:
             st.error(f"❌ Katalog dosyasında '{katalog_material_col}' ve '{katalog_ean_col}' olmalı.")
         if not stock_ok:
